@@ -1,0 +1,1 @@
+"""Shared config, camera-role, and cross-host contract modules."""

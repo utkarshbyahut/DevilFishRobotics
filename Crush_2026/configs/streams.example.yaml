@@ -1,0 +1,43 @@
+hosts:
+  rov:
+    blueos_ip: 192.168.2.2
+    role: video_publisher
+  operator:
+    host: operator-macbook.local
+    role: qgroundcontrol
+  inference_station:
+    host: inference-box.local
+    role: perception_depth_mapping
+
+streams:
+  front_left:
+    rtsp_path: video1
+    role: front_perception_left
+    primary_consumer: inference_station
+  front_right:
+    rtsp_path: video2
+    role: front_perception_right
+    primary_consumer: inference_station
+  bottom_flow:
+    rtsp_path: video3
+    role: depth_hold_bottom
+    primary_consumer: inference_station
+
+pipelines:
+  crab_detection:
+    enabled_streams:
+      - front_left
+      - front_right
+    model_family: yolo26
+    output: annotated_streams
+  depth_hold:
+    enabled_streams:
+      - bottom_flow
+    sensor_fusion: optical_flow
+    output: hold_state
+  stereo_mapping:
+    enabled_streams:
+      - front_left
+      - front_right
+    method: stereo_depth
+    output: depth_map_or_point_cloud

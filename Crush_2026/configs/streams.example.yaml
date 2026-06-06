@@ -2,42 +2,55 @@ hosts:
   rov:
     blueos_ip: 192.168.2.2
     role: video_publisher
-  operator:
-    host: operator-macbook.local
-    role: qgroundcontrol
-  inference_station:
-    host: inference-box.local
-    role: perception_depth_mapping
+  driver_station:
+    host: driver-macbook.local
+    role: qgroundcontrol_mode_control
+  analyst_station:
+    host: analyst-box.local
+    role: crab_detection_depth_mapping
 
 streams:
   front_left:
-    rtsp_path: video1
-    role: front_perception_left
-    primary_consumer: inference_station
+    rtsp_path: front_left
+    role: stereo_left
+    primary_consumer: analyst_station
   front_right:
-    rtsp_path: video2
-    role: front_perception_right
-    primary_consumer: inference_station
-  bottom_flow:
-    rtsp_path: video3
-    role: depth_hold_bottom
-    primary_consumer: inference_station
+    rtsp_path: front_right
+    role: stereo_right
+    primary_consumer: analyst_station
+  bottom_hflow:
+    rtsp_path: bottom_hflow
+    role: bottom_crab_detection_hold_context
+    primary_consumer: analyst_station
 
 pipelines:
   crab_detection:
     enabled_streams:
-      - front_left
-      - front_right
+      - bottom_hflow
     model_family: yolo26
-    output: annotated_streams
+    output: analyst_hud_and_logs
   depth_hold:
     enabled_streams:
-      - bottom_flow
-    sensor_fusion: optical_flow
-    output: hold_state
+      - bottom_hflow
+    sensor_fusion:
+      - depth_sensor
+      - optical_flow
+    output: depth_hold_or_loiter_assist
   stereo_mapping:
     enabled_streams:
       - front_left
       - front_right
     method: stereo_depth
-    output: depth_map_or_point_cloud
+    output: analyst_depth_map_or_point_cloud
+
+control_modes:
+  depth_hold:
+    holds_axes:
+      - z
+    primary_sensor: depth_sensor
+  loiter:
+    holds_axes:
+      - x
+      - y
+      - z
+    primary_sensor: optical_flow_plus_depth_sensor

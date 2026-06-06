@@ -1,1 +1,1 @@
-"""Perception pipelines such as YOLOv26 crab detection on the front cameras."""
+"""Bottom-camera crab-detection and mission object logic."""

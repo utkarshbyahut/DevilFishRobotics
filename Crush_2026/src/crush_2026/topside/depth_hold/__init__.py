@@ -1,1 +1,1 @@
-"""Bottom-camera and optical-flow assisted depth-hold components."""
+"""Depth-sensor, optical-flow, and bottom-camera assisted hold components."""

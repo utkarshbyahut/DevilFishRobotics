@@ -2,3 +2,5 @@ __pycache__/
 *.py[cod]
 .DS_Store
 snapshot_*.jpg
+
+sam2_t.pt

@@ -1,0 +1,12 @@
+v=0
+s=e933a6bf-2c0c-4c21-88cd-781cea739d85
+i=This is a UDP stream
+t=0 0
+a=tool:mavlink-camera-manager - 372402e
+a=type:broadcast
+a=recvonly
+m=video 5600 RTP/AVP 96
+c=IN IP4 192.168.2.112
+a=rtpmap:96 H264/90000
+a=framerate:30
+a=fmtp:96 packetization-mode=1;sprop-parameter-sets=Z01AKZZUA8ARPyo=,aO44gA==;profile-level-id=4d4029;level-asymmetry-allowed=1

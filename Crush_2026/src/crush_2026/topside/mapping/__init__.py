@@ -1,0 +1,1 @@
+"""Stereo depth and 3D scene reconstruction from the front camera pair."""

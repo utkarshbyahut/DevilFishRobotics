@@ -1,0 +1,1 @@
+"""Vehicle-side integration boundaries for BlueOS and ArduSub."""

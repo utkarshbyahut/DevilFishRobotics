@@ -12,6 +12,11 @@ try:
 except ImportError:
     np = None
 
+try:
+    from ultralytics import SAM
+except ImportError:
+    SAM = None
+
 
 DEFAULT_BLUEOS_IP = "192.168.2.2"
 DEFAULT_RTSP_PORT = "8554"
@@ -41,6 +46,8 @@ def require_dependencies() -> None:
         missing.append("OpenCV")
     if np is None:
         missing.append("numpy")
+    if SAM is None:
+        missing.append("ultralytics (SAM)")
     if missing:
         raise SystemExit(f"Missing dependencies for this script: {', '.join(missing)}")
     configure_opencv_ffmpeg_capture_options()
@@ -132,6 +139,14 @@ class DualStreamApp:
         self.rotation_steps = 0
         self.view_mode = 0
         self.frame_delay_ms = max(1, int(1000 / max(args.fps, 1)))
+        self.sam_model_path = args.sam_model
+        self.sam_device = args.sam_device
+        self.sam2_model = None
+        self.sam_prompt_point: tuple[int, int] | None = None
+        self.sam_enabled = False
+        self.sam_infer_interval = 10
+        self.sam_frame_counter = 0
+        self.sam_cached_frame = None
 
         self.left_map_x = None
         self.left_map_y = None
@@ -158,8 +173,38 @@ class DualStreamApp:
         self.root.geometry(f"{args.width}x{args.height}")
         self.root.configure(bg="black")
 
+        self.control_panel = tk.Frame(self.root, bg="#2d2d2d", width=250, padx=10, pady=10)
+        self.control_panel.pack(side=tk.LEFT, fill=tk.Y)
+
+        tk.Label(
+            self.control_panel,
+            text="CAMERA ALIGNMENT",
+            bg="#2d2d2d",
+            fg="white",
+            font=("Arial", 10, "bold"),
+        ).pack(anchor=tk.W, pady=(0, 5))
+
+        self.slider_x = self.create_knob("Right Cam Shift X (px)", -150, 150, 0)
+        self.slider_y = self.create_knob("Right Cam Shift Y (px)", -200, 200, 0)
+        self.slider_rot = self.create_knob("Right Cam Roll (deg)", -45, 45, 0)
+
+        tk.Frame(self.control_panel, bg="#404040", height=2).pack(fill=tk.X, pady=15)
+
+        tk.Label(
+            self.control_panel,
+            text="3D MATCHING TUNER",
+            bg="#2d2d2d",
+            fg="white",
+            font=("Arial", 10, "bold"),
+        ).pack(anchor=tk.W, pady=(0, 5))
+
+        self.slider_disp = self.create_knob("Search Range (x16)", 1, 8, 4)
+        self.slider_block = self.create_knob("Block Size", 3, 21, 7)
+        self.slider_uniq = self.create_knob("Uniqueness", 5, 25, 10)
+
         self.video_label = tk.Label(self.root, bg="black", bd=0, highlightthickness=0)
-        self.video_label.pack(fill=tk.BOTH, expand=True)
+        self.video_label.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+        self.video_label.bind("<Button-1>", self.capture_mouse_click)
 
         self.root.bind("<KeyPress-l>", self.rotate_left)
         self.root.bind("<KeyPress-L>", self.rotate_left)
@@ -167,6 +212,8 @@ class DualStreamApp:
         self.root.bind("<KeyPress-R>", self.rotate_right)
         self.root.bind("<KeyPress-m>", self.toggle_view_mode)
         self.root.bind("<KeyPress-M>", self.toggle_view_mode)
+        self.root.bind("<KeyPress-c>", self.clear_sam_prompt)
+        self.root.bind("<KeyPress-C>", self.clear_sam_prompt)
         self.root.bind("<Escape>", self.close)
         self.root.bind("<KeyPress-q>", self.close)
         self.root.bind("<KeyPress-Q>", self.close)
@@ -176,9 +223,44 @@ class DualStreamApp:
         self.running = True
 
         print("Starting dual-stream viewer. Press q or esc to quit.")
-        print("Controls: l rotates both streams left 90 deg, r rotates both streams right 90 deg, m toggles view mode.")
+        print("Controls: l rotates both streams left 90 deg, r rotates both streams right 90 deg, m toggles view mode, c clears SAM prompt.")
         print(f"Left stream:  {self.left_stream.source}")
         print(f"Right stream: {self.right_stream.source}")
+
+        self.matcher_settings = None
+        self.init_sam_model()
+
+    def init_sam_model(self) -> None:
+        try:
+            self.sam2_model = SAM(self.sam_model_path)
+            self.sam_enabled = True
+            print(f"Loaded SAM2 model: {self.sam_model_path}")
+        except Exception as exc:
+            self.sam2_model = None
+            self.sam_enabled = False
+            print(f"SAM2 disabled ({exc})")
+
+    def create_knob(self, label_text: str, min_val: int, max_val: int, init_val: int):
+        tk.Label(
+            self.control_panel,
+            text=label_text,
+            bg="#2d2d2d",
+            fg="#b3b3b3",
+            font=("Arial", 8),
+        ).pack(anchor=tk.W, pady=(5, 0))
+        slider = tk.Scale(
+            self.control_panel,
+            from_=min_val,
+            to=max_val,
+            orient=tk.HORIZONTAL,
+            bg="#2d2d2d",
+            fg="white",
+            highlightthickness=0,
+            bd=1,
+        )
+        slider.set(init_val)
+        slider.pack(fill=tk.X, pady=(0, 5))
+        return slider
 
     def init_stereo_matrices(self, w: int, h: int) -> None:
         base_dir = os.path.dirname(__file__)
@@ -240,13 +322,105 @@ class DualStreamApp:
         print("Using virtual underwater stereo calibration maps.")
 
     def toggle_view_mode(self, _event=None) -> None:
-        self.view_mode = (self.view_mode + 1) % 3
+        self.view_mode = (self.view_mode + 1) % 4
         modes = {
             0: "Split View",
             1: "Blended Flattened View",
             2: "3D Depth View",
+            3: "SAM2 Interactive View",
         }
         print(f"View mode: {modes[self.view_mode]}")
+
+    def clear_sam_prompt(self, _event=None) -> None:
+        self.sam_prompt_point = None
+        self.sam_cached_frame = None
+        print("SAM2 prompt cleared")
+
+    def capture_mouse_click(self, event) -> None:
+        x = max(0, int(event.x))
+        y = max(0, int(event.y))
+        self.sam_prompt_point = (x, y)
+        print(f"SAM2 prompt at: ({x}, {y})")
+
+    def process_sam2_inference(self, frame):
+        if frame is None or not self.sam_enabled or self.sam_prompt_point is None:
+            return frame
+
+        h, w = frame.shape[:2]
+        x = max(0, min(w - 1, self.sam_prompt_point[0]))
+        y = max(0, min(h - 1, self.sam_prompt_point[1]))
+
+        try:
+            results = self.sam2_model.predict(
+                source=frame,
+                points=[[x, y]],
+                labels=[1],
+                device=self.sam_device,
+                verbose=False,
+            )
+            if results and len(results) > 0 and results[0].masks is not None:
+                mask = results[0].masks.data[0].cpu().numpy()
+                if mask.shape[:2] != (h, w):
+                    mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
+
+                binary = (mask > 0.5).astype(np.uint8)
+                overlay = np.zeros_like(frame)
+                overlay[binary == 1] = (0, 255, 0)
+                out = cv2.addWeighted(frame, 0.7, overlay, 0.3, 0.0)
+                cv2.circle(out, (x, y), 6, (0, 0, 255), -1)
+                return out
+        except Exception as exc:
+            print(f"SAM2 inference failed: {exc}")
+        return frame
+
+    def apply_manual_transformation(self, src_frame):
+        if src_frame is None:
+            return None
+
+        shift_x = int(self.slider_x.get())
+        shift_y = int(self.slider_y.get())
+        angle = float(self.slider_rot.get())
+
+        h, w = src_frame.shape[:2]
+        center = (w // 2, h // 2)
+        matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+        matrix[0, 2] += shift_x
+        matrix[1, 2] += shift_y
+
+        return cv2.warpAffine(
+            src_frame,
+            matrix,
+            (w, h),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=0,
+        )
+
+    def update_matcher_from_knobs(self) -> None:
+        disparities = int(self.slider_disp.get()) * 16
+        block_size = int(self.slider_block.get())
+        if block_size % 2 == 0:
+            block_size += 1
+        block_size = max(3, block_size)
+        uniqueness = int(self.slider_uniq.get())
+
+        settings = (disparities, block_size, uniqueness)
+        if settings == self.matcher_settings:
+            return
+
+        self.stereo_matcher = cv2.StereoSGBM_create(
+            minDisparity=0,
+            numDisparities=disparities,
+            blockSize=block_size,
+            P1=8 * 3 * (block_size**2),
+            P2=32 * 3 * (block_size**2),
+            disp12MaxDiff=1,
+            uniquenessRatio=uniqueness,
+            speckleWindowSize=150,
+            speckleRange=2,
+            mode=cv2.STEREO_SGBM_MODE_SGBM_3WAY,
+        )
+        self.matcher_settings = settings
 
     def rotate_left(self, _event=None) -> None:
         self.rotation_steps = (self.rotation_steps - 1) % 4
@@ -285,8 +459,8 @@ class DualStreamApp:
             self.init_stereo_matrices(width, height)
 
     def build_display(self):
-        win_w = max(self.root.winfo_width(), 320)
-        win_h = max(self.root.winfo_height(), 240)
+        win_w = max(self.video_label.winfo_width(), 320)
+        win_h = max(self.video_label.winfo_height(), 240)
         layout, canvas_w, canvas_h = self.compute_canvas_geometry(win_w, win_h)
 
         left_frame = self.left_stream.read()
@@ -326,6 +500,8 @@ class DualStreamApp:
         if left_frame.shape[:2] != right_frame.shape[:2]:
             right_frame = cv2.resize(right_frame, (left_frame.shape[1], left_frame.shape[0]), interpolation=cv2.INTER_LINEAR)
 
+        right_frame = self.apply_manual_transformation(right_frame)
+
         frame_h, frame_w = left_frame.shape[:2]
         self.ensure_stereo_map_size(frame_w, frame_h)
 
@@ -339,12 +515,29 @@ class DualStreamApp:
             return fill_frame(blended, canvas_w, canvas_h)
 
         if self.view_mode == 2:
+            self.update_matcher_from_knobs()
             gray_left = cv2.cvtColor(left_rect, cv2.COLOR_BGR2GRAY)
             gray_right = cv2.cvtColor(right_rect, cv2.COLOR_BGR2GRAY)
             disparity = self.stereo_matcher.compute(gray_left, gray_right).astype(np.float32) / 16.0
             depth_gray = cv2.normalize(disparity, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
             depth_bgr = cv2.cvtColor(depth_gray, cv2.COLOR_GRAY2BGR)
             return fill_frame(depth_bgr, canvas_w, canvas_h)
+
+        if self.view_mode == 3:
+            sam_base = fill_frame(left_rect, canvas_w, canvas_h)
+            if not self.sam_enabled or self.sam_prompt_point is None:
+                self.sam_cached_frame = None
+                return sam_base
+
+            self.sam_frame_counter += 1
+            should_infer = (
+                self.sam_cached_frame is None
+                or self.sam_cached_frame.shape != sam_base.shape
+                or (self.sam_frame_counter % self.sam_infer_interval == 0)
+            )
+            if should_infer:
+                self.sam_cached_frame = self.process_sam2_inference(sam_base)
+            return self.sam_cached_frame if self.sam_cached_frame is not None else sam_base
 
         if layout == "horizontal":
             pane_w = max(1, (canvas_w - STREAM_GAP) // 2)
@@ -394,6 +587,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--width", type=int, default=DEFAULT_WINDOW_WIDTH)
     parser.add_argument("--height", type=int, default=DEFAULT_WINDOW_HEIGHT)
     parser.add_argument("--fps", type=int, default=30)
+    parser.add_argument("--sam-model", default="sam2_t.pt", help="Ultralytics SAM2 model file")
+    parser.add_argument("--sam-device", default="cpu", help="SAM2 inference device, e.g. cpu or cuda")
     parser.add_argument(
         "--horizontal-ratio",
         type=float,

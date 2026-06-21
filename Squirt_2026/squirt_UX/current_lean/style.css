@@ -1,0 +1,21 @@
+/* Custom styling for the status indicator */
+#statusIndicator {
+    height: 10px;
+    width: 10px;
+    border-radius: 50%;
+  }
+
+  /* Color coding for the status indicator */
+  .status-green {
+    background-color: #22c55e; /* Green for connected */
+  }
+
+  .status-red {
+    background-color: #f44336; /* Red for disconnected */
+  }
+
+  /* Styling for the serial terminal */
+  #terminal {
+    background-color: #f5f5f5; /* Light grey background */
+    font-family: 'Courier New', Courier, monospace; /* Monospaced font for better readability */
+  }

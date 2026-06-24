@@ -93,6 +93,8 @@ void setup() {
     Serial.print("[Ground_Com] MAC Address: ");
     readMacAddress();
 
+
+    esp_wifi_set_channel(ESPNOW_WIFI_CHANNEL, WIFI_SECOND_CHAN_NONE);
     // Initialise ESP-NOW. If this fails the radio isn't usable, so bail out of
     // setup() (the board will sit idle rather than crash-loop).
     if (esp_now_init() != ESP_OK) {
